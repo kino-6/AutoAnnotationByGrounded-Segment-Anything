@@ -4,13 +4,15 @@ import cv2
 from scipy import ndimage
 import gradio as gr
 import argparse
+import shutil
+import zipfile
+from datetime import datetime
 import numpy as np
 import torch
 import torchvision
 from PIL import Image, ImageDraw, ImageFont
 from diffusers import StableDiffusionInpaintPipeline
 from transformers import BlipProcessor, BlipForConditionalGeneration
-import openai
 import yaml
 
 # Grounding DINO
@@ -348,10 +350,14 @@ def process_other_tasks(
 
     return masks, boxes_filt, pred_phrases
 
+def list_files():
+    # output_dir 内のファイルをリスト化
+    files = [os.path.join(output_dir, f) for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
+    return files
 
 def run_grounded_sam(input_file_path, text_prompt, task_type, inpaint_prompt, box_threshold, text_threshold, iou_threshold, inpaint_mode, scribble_mode, openai_api_key, start_frame, stop_frame, skip_frame, color_palette):
     """
-    Main function to run Grounded SAM tasks on an image or video.
+    Main function to run Grounded SAM tasks on a single image or video.
     """
     if is_video_file(input_file_path):
         process_video(input_file_path, text_prompt, task_type, inpaint_prompt, box_threshold, text_threshold, iou_threshold, inpaint_mode, scribble_mode, openai_api_key, start_frame, stop_frame, skip_frame, color_palette)
@@ -639,7 +645,6 @@ def is_video_file(file_path):
     _, ext = os.path.splitext(file_path)
     return ext.lower() in video_extensions
 
-
 def process_video(input_video_path, text_prompt, task_type, inpaint_prompt, box_threshold, text_threshold, iou_threshold, inpaint_mode, scribble_mode, openai_api_key, start_frame, stop_frame, skip_frame, color_palette):
     """
     Process a video file, frame by frame, using the specified task.
@@ -714,18 +719,37 @@ def process_video(input_video_path, text_prompt, task_type, inpaint_prompt, box_
     video_capture.release()
 
 
-def process_file(input_file, text_prompt, task_type, inpaint_prompt, box_threshold, text_threshold, iou_threshold, inpaint_mode, scribble_mode, openai_api_key, start_frame, stop_frame, skip_frame):
+def process_file(input_files, text_prompt, task_type, inpaint_prompt, box_threshold, text_threshold, iou_threshold, inpaint_mode, scribble_mode, openai_api_key, start_frame, stop_frame, skip_frame):
     """
     Determine if the input is a video or image, and process accordingly.
     """
-    file_path = input_file.name
+    file_paths = [file.name for file in input_files]
 
-    # Load configuration including the color palette
+    # 設定をロード
     config = load_config(GRADIO_CONFIG_FILE)
     color_palette = config.get("color_palette", DEFAULT_COLOR_PALETTE)
 
-    run_grounded_sam(file_path, text_prompt, task_type, inpaint_prompt, box_threshold, text_threshold, iou_threshold, inpaint_mode, scribble_mode, openai_api_key, start_frame, stop_frame, skip_frame, color_palette)
+    # 各ファイルを個別に処理
+    for file_path in file_paths:
+        run_grounded_sam(file_path, text_prompt, task_type, inpaint_prompt, box_threshold, text_threshold, iou_threshold, inpaint_mode, scribble_mode, openai_api_key, start_frame, stop_frame, skip_frame, color_palette)
 
+
+def zip_output_dir():
+    """Zip the entire output directory for download with a timestamp, excluding any existing zip files."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_file_name = f"outputs_{timestamp}.zip"
+    zip_file_path = os.path.join(output_dir, zip_file_name)
+
+    # Create a zip file excluding other zip files
+    with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files in os.walk(output_dir):
+            for file in files:
+                if not file.endswith('.zip'):  # Exclude existing zip files
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, output_dir)
+                    zipf.write(file_path, arcname)
+
+    return zip_file_path
 
 def main():
     """
@@ -751,14 +775,14 @@ def main():
     with block:
         with gr.Row():
             with gr.Column():
-                input_file = gr.File(label="Upload Image or Video", file_count="single")
+                input_files = gr.Files(label="Upload Images or Videos", file_count="multiple")
                 task_type = gr.Dropdown(
                     ["scribble", "automask", "det", "seg", "inpainting", "automatic"],
                     value=config.get("task_type", "automatic"),
                     label="Task Type",
                 )
                 text_prompt = gr.Textbox(
-                    label="Text Prompt", value=config.get("text_prompt", "default prompt")
+                    label="Text Prompt", value=config.get("text_prompt", "plate, car, road, person, sidewalk, white lane, sign")
                 )
                 inpaint_prompt = gr.Textbox(
                     label="Inpaint Prompt", value=config.get("inpaint_prompt", "")
@@ -806,21 +830,25 @@ def main():
                     label="Start Frame", value=config.get("start_frame", 0), step=1
                 )
                 stop_frame = gr.Number(
-                    label="Stop Frame", value=config.get("stop_frame", 1000), step=1
+                    label="Stop Frame", value=config.get("stop_frame", 100), step=1
                 )
                 skip_frame = gr.Number(
-                    label="Skip Frame", value=config.get("skip_frame", 1), step=1
+                    label="Skip Frame", value=config.get("skip_frame", 10), step=1
                 )
 
             with gr.Column():
                 gallery = gr.Gallery(
                     label="Generated Images", show_label=False, elem_id="gallery"
                 ).style(preview=True, grid=2, object_fit="scale-down")
+                
+                # Add download button for the zipped output directory
+                download_button = gr.Button("Download All Outputs")
+                download_button.click(fn=zip_output_dir, outputs=gr.File())
 
         run_button.click(
             fn=process_file,
             inputs=[
-                input_file,
+                input_files,
                 text_prompt,
                 task_type,
                 inpaint_prompt,
@@ -836,6 +864,7 @@ def main():
             ],
             outputs=gallery,
         )
+
 
     block.queue(concurrency_count=100)
     block.launch(server_name="0.0.0.0", server_port=args.port, debug=args.debug, share=args.share)
@@ -854,7 +883,6 @@ def main():
         "color_palette": color_palette,
     }
     save_config(current_config)
-
 
 if __name__ == "__main__":
     main()
