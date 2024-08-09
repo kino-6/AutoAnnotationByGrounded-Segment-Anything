@@ -687,6 +687,8 @@ def process_video(input_video_path, text_prompt, task_type, inpaint_prompt, box_
 
         # Generate a unique basename for each frame
         basename = f"{video_basename}_frame_{frame_number}"
+        print(f"=== {frame_number} / {total_frames}")
+        print(f"file: {basename}")
 
         # Process the frame based on task type
         masks, boxes_filt, pred_phrases = process_image(image_pil, None, task_type, sam_predictor, text_prompt, box_threshold, text_threshold, iou_threshold)
